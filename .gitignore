@@ -39,3 +39,5 @@ build/
 .DS_Storetarget/
 response.txt
 infra/dynamo-policy.json
+.idea/
+dependency-reduced-pom.xml
