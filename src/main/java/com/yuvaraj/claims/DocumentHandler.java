@@ -31,6 +31,11 @@ public class DocumentHandler implements RequestHandler<S3Event, String>, Resourc
     public String handleRequest(S3Event event, Context context) {
         for (var record : event.getRecords()) {
             var s3 = record.getS3();
+            if (s3 == null || s3.getObject() == null || s3.getBucket() == null) {
+                context.getLogger().log("WARN: skipping record without S3 details, eventName="
+                        + record.getEventName());
+                continue;
+            }
             // S3 URL-encodes keys in events: "my file.pdf" arrives as "my+file.pdf"
             String key = URLDecoder.decode(s3.getObject().getKey(), StandardCharsets.UTF_8);
 
