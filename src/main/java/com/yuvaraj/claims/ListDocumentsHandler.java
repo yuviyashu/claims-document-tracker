@@ -11,6 +11,10 @@ import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,21 +36,44 @@ public class ListDocumentsHandler
     @Override
     public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context context) {
         try {
-            var response = DYNAMO.scan(r -> r.tableName(TABLE).limit(MAX_ITEMS));
-
-            List<Map<String, Object>> documents = response.items().stream()
-                    .map(ListDocumentsHandler::toDocument)
-                    .toList();
-
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("count", documents.size());
-            body.put("documents", documents);
-
-            return json(200, body);
+            Map<String, String> params = event.getPathParameters();
+            if (params != null && params.containsKey("id")) {
+                String id = URLDecoder.decode(params.get("id"), StandardCharsets.UTF_8);
+                return getOne(id);
+            }
+            return listAll();
         } catch (Exception e) {
-            context.getLogger().log("ERROR: failed to list documents: " + e);
-            return json(500, Map.of("error", "Could not list documents"));
+            context.getLogger().log("ERROR: request failed: " + e);
+            return json(500, Map.of("error", "Could not process request"));
         }
+    }
+
+    // GET /documents/{id}: direct key lookup, the cloakroom token
+    private static APIGatewayV2HTTPResponse getOne(String id) {
+        var response = DYNAMO.getItem(r -> r.tableName(TABLE)
+                .key(Map.of("documentId", AttributeValue.fromS(id))));
+
+        if (!response.hasItem() || response.item().isEmpty()) {
+            return json(404, Map.of("error", "Document not found", "documentId", id));
+        }
+        return json(200, toDocument(response.item()));
+    }
+
+    // GET /documents: scan, then sort newest first
+    private static APIGatewayV2HTTPResponse listAll() {
+        var response = DYNAMO.scan(r -> r.tableName(TABLE).limit(MAX_ITEMS));
+
+        List<Map<String, Object>> documents = response.items().stream()
+                .map(ListDocumentsHandler::toDocument)
+                .sorted(Comparator.comparing(
+                        ListDocumentsHandler::uploadedAt,
+                        Comparator.nullsLast(Comparator.<Instant>reverseOrder())))
+                .toList();
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("count", documents.size());
+        body.put("documents", documents);
+        return json(200, body);
     }
 
     // Items are schemaless, so read each attribute defensively
@@ -58,6 +85,15 @@ public class ListDocumentsHandler
         doc.put("sizeBytes", size != null && size.n() != null ? Long.parseLong(size.n()) : null);
         doc.put("uploadedAt", text(item, "uploadedAt"));
         return doc;
+    }
+
+    private static Instant uploadedAt(Map<String, Object> doc) {
+        Object value = doc.get("uploadedAt");
+        try {
+            return value == null ? null : Instant.parse(value.toString());
+        } catch (Exception e) {
+            return null; // unparseable dates sort last
+        }
     }
 
     private static String text(Map<String, AttributeValue> item, String name) {
@@ -82,9 +118,9 @@ public class ListDocumentsHandler
 
     @Override
     public void beforeCheckpoint(org.crac.Context<? extends Resource> context) throws Exception {
-        // Prime the real code path: a 1-item scan plus JSON serialization
-        var sample = DYNAMO.scan(r -> r.tableName(TABLE).limit(1));
-        JSON.writeValueAsString(sample.items().stream().map(ListDocumentsHandler::toDocument).toList());
+        // Prime both real code paths: scan + sort + JSON, and a key lookup
+        listAll();
+        getOne("__priming__");
     }
 
     @Override
