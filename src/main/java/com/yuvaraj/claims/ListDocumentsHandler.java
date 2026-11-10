@@ -26,7 +26,7 @@ public class ListDocumentsHandler
             .httpClient(UrlConnectionHttpClient.create())
             .build();
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String TABLE = "claim-documents";
+    private static final String TABLE = System.getenv().getOrDefault("TABLE_NAME", "claim-documents");
     private static final int MAX_ITEMS = 100;
 
     public ListDocumentsHandler() {

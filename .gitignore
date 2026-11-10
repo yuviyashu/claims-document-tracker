@@ -42,3 +42,5 @@ infra/dynamo-policy.json
 .idea/
 dependency-reduced-pom.xml
 infra/dynamo-read-policy.json
+.aws-sam/
+samconfig.toml

@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Claims Document Tracker - S3, Lambda, DynamoDB, API Gateway
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Email address for Lambda error alerts
+
+# Settings shared by both functions (Days 3 and 5)
+Globals:
+  Function:
+    Runtime: java21
+    Architectures: [arm64]
+    MemorySize: 512
+    Timeout: 30
+    CodeUri: .
+    AutoPublishAlias: live            # publish a version + move the "live" alias on every deploy
+    SnapStart:
+      ApplyOn: PublishedVersions
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref DocumentsTable
+
+Resources:
+
+  # Day 1: the shelf
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Day 2: the register
+  DocumentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: claim-documents-sam
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: documentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: documentId
+          KeyType: HASH
+
+  # Days 3-5: the clerk, its badge, the doorbell and log retention
+  IndexerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/claims-sam-indexer
+      RetentionInDays: 7
+
+  IndexerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: claims-sam-indexer
+      Handler: com.yuvaraj.claims.DocumentHandler::handleRequest
+      LoggingConfig:
+        LogGroup: !Ref IndexerLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:DescribeTable
+              Resource: !GetAtt DocumentsTable.Arn
+      Events:
+        FileUploaded:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentsBucket
+            Events: s3:ObjectCreated:*
+
+  # Days 6-7: the counter assistant and its read-only badge
+  ListLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/claims-sam-list
+      RetentionInDays: 7
+
+  ListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: claims-sam-list
+      Handler: com.yuvaraj.claims.ListDocumentsHandler::handleRequest
+      Timeout: 15
+      LoggingConfig:
+        LogGroup: !Ref ListLogGroup
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+                - dynamodb:GetItem
+              Resource: !GetAtt DocumentsTable.Arn
+      Events:
+        ListDocuments:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ClaimsApi
+            Path: /documents
+            Method: GET
+        GetDocument:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ClaimsApi
+            Path: /documents/{id}
+            Method: GET
+
+  # Day 6: the enquiry counter, with its speed limit
+  ClaimsApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
+
+  # Day 5: the smoke detector and the family WhatsApp group
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  IndexerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: claims-sam-indexer-errors
+      AlarmDescription: claims-sam-indexer Lambda reported errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IndexerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertsTopic]
+      OKActions: [!Ref AlertsTopic]
+
+Outputs:
+  ApiUrl:
+    Description: List documents endpoint
+    Value: !Sub "https://${ClaimsApi}.execute-api.${AWS::Region}.amazonaws.com/documents"
+  BucketName:
+    Description: Upload documents here
+    Value: !Ref DocumentsBucket

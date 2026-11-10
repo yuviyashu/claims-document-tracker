@@ -20,7 +20,7 @@ public class DocumentHandler implements RequestHandler<S3Event, String>, Resourc
     private static final DynamoDbClient DYNAMO = DynamoDbClient.builder()
             .httpClient(UrlConnectionHttpClient.create())
             .build();
-    private static final String TABLE = "claim-documents";
+    private static final String TABLE = System.getenv().getOrDefault("TABLE_NAME", "claim-documents");
 
     public DocumentHandler() {
         // Register for SnapStart runtime hooks
